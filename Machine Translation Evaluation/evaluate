@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+import argparse # optparse is deprecated
+from nltk.corpus import wordnet as wn
+from nltk.stem.lancaster import LancasterStemmer
+from itertools import islice # slicing for iterators
+import string
+stemmer = LancasterStemmer()
+
+def findSyn(ref):
+    synMap = {}
+    for w in ref:
+        s = wn.synsets(w.decode('utf8'))
+        for word in s:
+            for l in word.lemmas():
+                synMap[l.name()] = ref.index(w)
+
+    return synMap
+
+def findStem(ref):
+    stem_map = {}
+    for w in ref:
+        s = stemmer.stem(w.decode('utf8'))
+        # s = ls.stem(w.decode('utf8'))
+        #s = morphy_stem(w)
+        stem_map[s] = ref.index(w)
+    return stem_map
+
+def findChunk(h, ref, synMap, stem_map):
+    count = 0
+    i = 0
+    while i < len(h):
+        word = h[i]
+        if word in ref or word.decode('utf8') in synMap.keys() or stemmer.stem(word.decode('utf8')) in stem_map.keys():
+            if word in ref:
+                idx = ref.index(word)
+            elif stemmer.stem(word.decode('utf8')) in stem_map.keys():
+                 idx = stem_map[stemmer.stem(word.decode('utf8'))]
+            else:
+                idx = synMap[word.decode('utf8')]
+            idx += 1
+            i += 1
+            while i < len(h) and idx < len(ref):
+                if h[i] == ref[idx]:
+                    i += 1
+                    idx += 1
+                elif stemmer.stem(h[i].decode('utf8')) in stem_map.keys():
+                     if stem_map[stemmer.stem(h[i].decode('utf8'))] == idx:
+                        i += 1
+                        idx += 1
+                     else:
+                         count += 1
+                         idx = stem_map[stemmer.stem(h[i].decode('utf8'))] + 1
+                         i += 1
+                elif h[i].decode('utf8') in synMap.keys():
+                    if synMap[h[i].decode('utf8')] == idx:
+                        i += 1
+                        idx += 1
+                    else:
+                        count += 1
+                        idx = synMap[h[i].decode('utf8')] + 1
+                        i += 1
+                else:
+                    break
+            count += 1
+        else:
+            i += 1
+    return count
+
+def findAntonym(w, synMap):
+
+    same = False
+    antonyms = []
+    for s in wn.synsets(w.decode('utf8')):
+        for l in s.lemmas():
+            if l.antonyms():
+                antonyms.append(l.antonyms()[0].name())
+
+    if any(i in antonyms for i in synMap.keys()):
+        same = True
+
+    return same
+
+def word_matches(h, ref, synMap, stem_map):
+    sum = 0
+    negWords = ['not', 'less', 'hardly', 'nothing', 'barely', 'scarcely', 'no']
+    for w in h:
+        if w in ref:
+            sum += 1
+        elif w.decode('utf8') in synMap.keys():
+            sum += 1
+        elif stemmer.stem(w.decode('utf8')) in stem_map.keys():
+            sum += 1
+        elif findAntonym(w, synMap) and h.index(w) > 0 and h[h.index(w) - 1] in negWords:
+            sum += 1
+    return sum
+    #return sum(1 for w in h if w in ref)
+ 
+def main():
+    parser = argparse.ArgumentParser(description='Evaluate translation hypotheses.')
+    parser.add_argument('-i', '--input', default='data/hyp1-hyp2-ref',
+            help='input file (default data/hyp1-hyp2-ref)')
+    parser.add_argument('-n', '--num_sentences', default=None, type=int,
+            help='Number of hypothesis pairs to evaluate')
+    # note that if x == [1, 2, 3], then x[:None] == x[:] == x (copy); no need for sys.maxint
+    opts = parser.parse_args()
+ 
+    # we create a generator and avoid loading all sentences into a list
+    def sentences():
+        with open(opts.input) as f:
+            for pair in f:
+                yield [sentence.strip().split() for sentence in pair.split(' ||| ')]
+ 
+    # note: the -n option does not work in the original code
+    for h1, h2, ref in islice(sentences(), opts.num_sentences):
+
+
+        alpha = 0.97
+        h1 = [''.join(c for c in s if c not in string.punctuation) for s in h1]
+        h2 = [''.join(c for c in s if c not in string.punctuation) for s in h2]
+        ref = [''.join(c for c in s if c not in string.punctuation) for s in ref]
+
+        rset = set(ref)
+        rlen = len(ref)
+        synMap = findSyn(ref)
+        stem_map = findStem(ref)
+
+        h1_match = word_matches(h1, rset, synMap, stem_map)
+
+        if h1_match == 0:
+            meteor1 = 0
+        else:
+            h1len = len(h1)
+            p1 = float(h1_match) / h1len
+            r1 = float(h1_match) / rlen
+            penalty1 = 0.5 * findChunk(h1,ref,synMap,stem_map)/h1_match
+            meteor1 = (1-penalty1) * (p1 * r1)/ ((1-alpha) * r1 + alpha * p1)
+
+        h2_match = word_matches(h2, rset, synMap,stem_map)
+
+        if h2_match == 0:
+            meteor2 = 0
+        else:
+            h2len = len(h2)
+            p2 = float(h2_match) / h2len
+            r2 = float(h2_match) / rlen
+            penalty2 = 0.5 * findChunk(h2, ref, synMap, stem_map) / h2_match
+            meteor2 = (1 - penalty2) * (p2 * r2)/ ((1-alpha) * r2 + alpha * p2)
+
+
+        print(1 if meteor1 > meteor2 else # \begin{cases}
+                (0 if meteor1 == meteor2
+                    else -1)) # \end{cases}
+
+
+ 
+# convention to allow import of this file as a module
+if __name__ == '__main__':
+    main()
